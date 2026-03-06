@@ -45,6 +45,12 @@ import itertools
 import os
 import sys
 
+# Phase-3 pace anchor — canonical COMPOUND_HARDNESS + PIT_LOSS_BY_CIRCUIT
+# Imported here so main.py never redefines these constants inline.
+_ROOT_FOR_IMPORT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(_ROOT_FOR_IMPORT, "../../phase_3/core")))
+from pace_anchor import COMPOUND_HARDNESS as _COMPOUND_HARDNESS_IMPORT, PIT_LOSS_BY_CIRCUIT
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 1.  MODEL ARCHITECTURE  (must match lap_time_predictor.py exactly)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -244,14 +250,20 @@ def derive_strategy_features(
     prev_lap         = 1
     current_compound = starting_compound.upper()
 
+    # FIX 4: pit lap convention — the pit lap itself is counted in the
+    # OUTGOING stint (the one being ended), matching the training data convention.
+    # Verified from CSV: VET Bahrain 2021, pit_lap=24 → laps_on_medium=24 (not 23).
+    # Formula: laps_in_stint = ps.lap - prev_lap + 1
+    # Final stint does NOT get the +1 because prev_lap is already the pit lap
+    # (which was counted above), so final = total_laps - prev_lap (not +1).
     for ps in pit_stops:
-        laps_in_stint = ps.lap - prev_lap
+        laps_in_stint = ps.lap - prev_lap + 1   # pit lap belongs to outgoing stint
         col = COMPOUND_TO_COL[current_compound]
         compound_laps[col] += laps_in_stint
         prev_lap         = ps.lap
         current_compound = ps.compound.upper()
 
-    final_stint_laps = total_laps - prev_lap + 1
+    final_stint_laps = total_laps - prev_lap      # no +1: prev_lap already counted
     col = COMPOUND_TO_COL[current_compound]
     compound_laps[col] += final_stint_laps
 
@@ -285,12 +297,12 @@ def derive_degradation_features(
     current_compound = starting_compound.upper()
 
     for ps in pit_stops:
-        stint_len = ps.lap - prev_lap
+        stint_len = ps.lap - prev_lap + 1   # pit lap counted in outgoing stint (Fix 4)
         stints.append((current_compound, stint_len))
         prev_lap         = ps.lap
         current_compound = ps.compound.upper()
 
-    final_len = total_laps - prev_lap + 1
+    final_len = total_laps - prev_lap        # no +1 (pit lap already counted above)
     stints.append((current_compound, max(final_len, 1)))
 
     stint_lengths = [s[1] for s in stints]
@@ -317,6 +329,7 @@ def build_num_dict(
     race_info: pd.Series,
     num_pit_stops: float,
     strategy_features: dict,
+    gp_name: str = "",
 ) -> dict:
     total_laps = float(race_info["total_laps_completed"])
     grid_pos   = float(race_info["grid_position"])
@@ -326,13 +339,26 @@ def build_num_dict(
     if num_pit_stops == 0:
         avg_pit_dur = 0.0
     else:
-        avg_pit_dur = float(race_info["avg_pit_duration"])
-        if pd.isna(avg_pit_dur) or avg_pit_dur <= 0:
-            avg_pit_dur = float(preprocessors["avg_pit_mean"])
+        # FIX 5: use circuit-specific pit loss instead of the global mean.
+        # Falls back to the historical row value, then the global mean.
+        circuit_pit = PIT_LOSS_BY_CIRCUIT.get(gp_name)
+        if circuit_pit is not None:
+            avg_pit_dur = circuit_pit
+        else:
+            avg_pit_dur = float(race_info["avg_pit_duration"])
+            if pd.isna(avg_pit_dur) or avg_pit_dur <= 0:
+                avg_pit_dur = float(preprocessors["avg_pit_mean"])
 
     # NOTE: best_position, worst_position, avg_position, avg_position_vs_grid
     # were removed from num_cols during retraining (leakage — post-race outcomes).
     # They are no longer passed to the model.
+
+    # FIX 3: fuel load proxy features — must match retrain_no_leakage.py exactly.
+    # stint1_fuel_weight: fraction of the race in the first stint (= first_pit_lap_pct,
+    # or 1.0 for 0-stop races). Tells the model how much heavy-fuel running occurred.
+    first_pit_pct      = strategy_features.get("first_pit_lap_pct", 0.0)
+    stint1_fuel_weight = 1.0 if num_pit_stops == 0 else float(first_pit_pct)
+    num_pit_stops_norm = min(num_pit_stops / 3.0, 1.0)
 
     base = {
         "grid_position":        grid_pos,
@@ -340,6 +366,8 @@ def build_num_dict(
         "avg_pit_duration":     avg_pit_dur,
         "total_laps_completed": total_laps,
         "pit_stops_per_lap":    pit_stops_per_lap,
+        "stint1_fuel_weight":   stint1_fuel_weight,
+        "num_pit_stops_norm":   num_pit_stops_norm,
         **strategy_features,
     }
     # Ensure degradation cols are present — zero-filled if not in strategy_features
@@ -360,7 +388,8 @@ def predict_single(
     gp_idx: int, driver_idx: int, team_idx: int,
     year_idx: int, weather_idx: int,
 ) -> float:
-    num_dict = build_num_dict(race_info, num_pit_stops, strategy_features)
+    gp_name  = race_info.get("gp_name", "")
+    num_dict = build_num_dict(race_info, num_pit_stops, strategy_features, gp_name=gp_name)
     ordered  = pd.DataFrame(
         [[num_dict[col] for col in preprocessors["num_cols"]]],
         columns=preprocessors["num_cols"]
@@ -397,8 +426,9 @@ def predict_batch(
     batch_size: int = 512,
 ) -> list:
     all_rows = []
+    gp_name  = race_info.get("gp_name", "")
     for cand in candidates:
-        nd = build_num_dict(race_info, float(cand["num_pits"]), cand["sf"])
+        nd = build_num_dict(race_info, float(cand["num_pits"]), cand["sf"], gp_name=gp_name)
         all_rows.append([nd[col] for col in preprocessors["num_cols"]])
 
     scaled = preprocessors["scaler"].transform(

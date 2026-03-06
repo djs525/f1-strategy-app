@@ -58,6 +58,17 @@ import pandas as pd
 import torch
 import joblib
 
+# ── Canonical hardness weights — single source of truth ──────────────────────
+# Imported here so _predict_rival_lap_time uses the EXACT same deg_score
+# formula that retrain_no_leakage.py used during training.
+# Do NOT redefine COMPOUND_HARDNESS inline anywhere in this file.
+_HERE_ADAPTER = os.path.dirname(os.path.abspath(__file__))
+_PHASE3_CORE  = os.path.abspath(os.path.join(_HERE_ADAPTER, "../core"))
+if _PHASE3_CORE not in sys.path:
+    sys.path.insert(0, _PHASE3_CORE)
+from pace_anchor import COMPOUND_HARDNESS  # noqa: E402
+from pace_anchor import PIT_LOSS_BY_CIRCUIT  # noqa: E402
+
 # ── Path setup ────────────────────────────────────────────────────────────────
 # Ensures both the project root (f1/) and phase_2 are importable
 _HERE         = os.path.dirname(os.path.abspath(__file__))   # backend/phase_3/adapters/
@@ -610,7 +621,9 @@ def _predict_rival_lap_time(
         stints = [("INTERMEDIATE", pit_lap - 1), ("HARD", total_laps - pit_lap + 1)]
     else:
         stints = [("MEDIUM", pit_lap - 1), ("HARD", total_laps - pit_lap + 1)]
-    COMPOUND_HARDNESS = {"SOFT":2.0,"MEDIUM":1.5,"HARD":1.0,"INTERMEDIATE":0.8,"WET":0.6}
+    # COMPOUND_HARDNESS is imported from pace_anchor at module level —
+    # do not redefine it here. Using the same values as retrain_no_leakage.py
+    # ensures deg_score is on the same scale the model was trained on.
     lengths    = [s[1] for s in stints]
     avg_age    = sum(lengths) / len(lengths)
     max_deg    = max(laps * COMPOUND_HARDNESS.get(c, 1.0) for c, laps in stints)
@@ -833,26 +846,37 @@ def _build_num_dict(race_info: pd.Series, num_pit_stops: float, strategy_feature
     if num_pit_stops == 0:
         avg_pit_dur = 0.0
     else:
-        avg_pit_dur = float(race_info.get("avg_pit_duration",
-                                          _preprocessors["avg_pit_mean"]))
-        if pd.isna(avg_pit_dur) or avg_pit_dur <= 0:
-            avg_pit_dur = float(_preprocessors["avg_pit_mean"])
+        # FIX 5: circuit-specific pit loss (same logic as main.py build_num_dict)
+        gp_name_key = str(race_info.get("gp_name", ""))
+        circuit_pit = PIT_LOSS_BY_CIRCUIT.get(gp_name_key)
+        if circuit_pit is not None:
+            avg_pit_dur = circuit_pit
+        else:
+            avg_pit_dur = float(race_info.get("avg_pit_duration",
+                                              _preprocessors["avg_pit_mean"]))
+            if pd.isna(avg_pit_dur) or avg_pit_dur <= 0:
+                avg_pit_dur = float(_preprocessors["avg_pit_mean"])
 
-    avg_pos       = float(race_info.get("avg_position",         grid_pos))
-    best_pos      = float(race_info.get("best_position",        grid_pos))
-    worst_pos     = float(race_info.get("worst_position",       20.0))
-    avg_pos_vs_g  = float(race_info.get("avg_position_vs_grid", 0.0))
+    # FIX 3: fuel load proxy — mirror of main.py build_num_dict
+    first_pit_pct      = strategy_features.get("first_pit_lap_pct", 0.0)
+    stint1_fuel_weight = 1.0 if num_pit_stops == 0 else float(first_pit_pct)
+    num_pit_stops_norm = min(num_pit_stops / 3.0, 1.0)
 
+    # FIX 1: leaky positional features (best_position, worst_position,
+    # avg_position, avg_position_vs_grid) are intentionally excluded here.
+    # They were removed from SAFE_NUM_COLS in retrain_no_leakage.py because
+    # they are post-race outcomes — passing them at inference was data leakage.
+    # The retrained model's scaler does NOT expect them; including them here
+    # would silently corrupt the feature vector if the old .joblib is loaded,
+    # or crash with a KeyError if the new one is. Either way: wrong.
     base = {
         "grid_position":        grid_pos,
-        "best_position":        best_pos,
-        "worst_position":       worst_pos,
-        "avg_position":         avg_pos,
         "num_pit_stops":        num_pit_stops,
         "avg_pit_duration":     avg_pit_dur,
         "total_laps_completed": total_laps,
-        "avg_position_vs_grid": avg_pos_vs_g,
         "pit_stops_per_lap":    pit_stops_per_lap,
+        "stint1_fuel_weight":   stint1_fuel_weight,
+        "num_pit_stops_norm":   num_pit_stops_norm,
         **strategy_features,
     }
 

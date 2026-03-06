@@ -55,11 +55,55 @@ PIT_TIMING_COLS = [
     "first_pit_lap_pct", "second_pit_lap_pct", "third_pit_lap_pct",
 ]
 
+# Average pit stop duration (seconds) per circuit, derived from the
+# features_dataset_with_targets.csv training data (2021-2025 races).
+# Used by build_num_dict in main.py and _build_num_dict in model_adapter.py
+# to replace the global mean (~24.4s) with a circuit-accurate value.
+#
+# Why this matters: a 1-stop vs 2-stop comparison is wrong by ~5s/pit if
+# the optimizer uses a single global mean. Silverstone (28.9s) vs Albert
+# Park (19.1s) is a 10-second difference — enough to flip strategy calls.
+#
+# Values are rounded to 1 decimal. Circuits not listed fall back to
+# the global mean stored in preprocessors["avg_pit_mean"].
+PIT_LOSS_BY_CIRCUIT = {
+    "Australian Grand Prix":      19.1,
+    "Dutch Grand Prix":           20.3,
+    "Azerbaijan Grand Prix":      20.7,
+    "Miami Grand Prix":           22.1,
+    "Saudi Arabian Grand Prix":   22.2,
+    "Austrian Grand Prix":        22.2,
+    "Las Vegas Grand Prix":       22.3,
+    "Abu Dhabi Grand Prix":       22.7,
+    "Spanish Grand Prix":         22.8,
+    "Belgian Grand Prix":         23.4,
+    "Hungarian Grand Prix":       23.4,
+    "Chinese Grand Prix":         23.6,
+    "Mexico City Grand Prix":     23.8,
+    "Canadian Grand Prix":        24.0,
+    "São Paulo Grand Prix":       24.0,
+    "United States Grand Prix":   24.4,
+    "Italian Grand Prix":         25.2,
+    "Japanese Grand Prix":        25.3,
+    "Monaco Grand Prix":          25.7,
+    "Bahrain Grand Prix":         25.7,
+    "Singapore Grand Prix":       28.3,
+    "Qatar Grand Prix":           28.3,
+    "British Grand Prix":         28.9,
+    # 2026 new circuits — mapped to closest analogue
+    "Madrid Grand Prix":          22.8,   # street-hybrid, est. ~Barcelona
+}
+
 
 # Compound hardness weights for the degradation score.
 # Softer compounds degrade faster per lap, so they carry more weight
 # when computing how hard tyres were stressed across the race.
 # Soft=3 (degrades quickly), Hard=1 (most durable), Wet=1 (low temp = low deg)
+#
+# ⚠️  CANONICAL SOURCE OF TRUTH — import this everywhere.
+# Do NOT redefine COMPOUND_HARDNESS inline in model_adapter.py,
+# main.py, or any other file. All deg_score calculations must use
+# these exact values to match what retrain_no_leakage.py trained on.
 COMPOUND_HARDNESS = {
     "SOFT":         3.0,
     "MEDIUM":       2.0,
@@ -84,13 +128,13 @@ def derive_strategy_features_2026(
     current_compound = starting_compound.upper()
 
     for ps in pit_stops:
-        laps_in_stint = ps["lap"] - prev_lap
+        laps_in_stint = ps["lap"] - prev_lap + 1  # pit lap counted in outgoing stint (Fix 4)
         col = COMPOUND_TO_COL[current_compound]
         compound_laps[col] += laps_in_stint
         prev_lap         = ps["lap"]
         current_compound = ps["compound"].upper()
 
-    final_laps = total_laps - prev_lap + 1
+    final_laps = total_laps - prev_lap             # no +1: pit lap already counted
     compound_laps[COMPOUND_TO_COL[current_compound]] += final_laps
 
     pit_laps = [ps["lap"] for ps in pit_stops]
@@ -135,13 +179,13 @@ def derive_degradation_features(
     current_compound = starting_compound.upper()
 
     for ps in pit_stops:
-        stint_laps = ps["lap"] - prev_lap
+        stint_laps = ps["lap"] - prev_lap + 1  # pit lap counted in outgoing stint (Fix 4)
         stints.append((current_compound, stint_laps))
         prev_lap         = ps["lap"]
         current_compound = ps["compound"].upper()
 
     # Final stint
-    final_laps = total_laps - prev_lap + 1
+    final_laps = total_laps - prev_lap            # no +1: pit lap already counted
     stints.append((current_compound, final_laps))
 
     if not stints:

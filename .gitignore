@@ -1,7 +1,4 @@
 .env
-data/
-*.pth
-*.joblib
 __pycache__/
 *.pyc
 node_modules/

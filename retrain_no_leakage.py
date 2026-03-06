@@ -90,6 +90,23 @@ SAFE_NUM_COLS = [
     "avg_tyre_age",
     "max_stint_laps",
     "deg_score",
+    # FIX 3: fuel load proxy features.
+    # The model has no direct fuel signal. These two features give it a
+    # proxy for how much heavy-fuel running occurred in the first stint.
+    #
+    # stint1_fuel_weight: fraction of the race spent in the opening stint.
+    #   A high value (e.g. 0.7 for a 1-stop) means the driver spent most
+    #   of the race on a heavy, degrading fuel load. A low value (e.g. 0.25
+    #   for a 3-stop) means short stints with fresh tyres AND lighter fuel.
+    #   This lets the model learn that 3-stop strategies aren't always faster
+    #   on average because the early laps carry ~40kg more fuel.
+    #
+    # num_pit_stops_norm: pit stops scaled 0-1 over max 3 stops.
+    #   Redundant with num_pit_stops but on a normalised scale that avoids
+    #   the model conflating "1 stop" and "3 stops" as linearly equivalent
+    #   to their fuel/tyre interaction effects.
+    "stint1_fuel_weight",
+    "num_pit_stops_norm",
 ]
 
 RAW_TARGET = "avg_lap_time_circuit"
@@ -158,6 +175,20 @@ def train():
           f"({raw_std/delta_std:.1f}x easier for the model)")
     print(f"      Delta range      : {df[DELTA_COL].min():.3f}s – "
           f"{df[DELTA_COL].max():.3f}s")
+
+    # FIX 3: Derive fuel load proxy features.
+    # stint1_fuel_weight = first_pit_lap_pct (fraction of race in opening stint).
+    # A high value means the driver spent most of the race on heavy fuel.
+    # For 0-stop races the whole race is the first stint so weight = 1.0.
+    # num_pit_stops_norm normalises stops to 0–1 range over max 3 stops.
+    print(f"\n      [Fix 3] Computing fuel load proxy features")
+    df["stint1_fuel_weight"] = df["first_pit_lap_pct"].clip(0.0, 1.0)
+    df.loc[df["num_pit_stops"] == 0, "stint1_fuel_weight"] = 1.0
+    df["num_pit_stops_norm"] = (df["num_pit_stops"] / 3.0).clip(0.0, 1.0)
+    print(f"      stint1_fuel_weight: "
+          f"{df['stint1_fuel_weight'].min():.3f} – {df['stint1_fuel_weight'].max():.3f}")
+    print(f"      num_pit_stops_norm: "
+          f"{df['num_pit_stops_norm'].min():.3f} – {df['num_pit_stops_norm'].max():.3f}")
 
     # ── 4. Encode categoricals ────────────────────────────────────────────────
     print(f"\n[4/7] Fitting label encoders")
