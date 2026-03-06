@@ -1,0 +1,42 @@
+services:
+
+  # ── FastAPI Backend ──────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend        # Contains: phase_2/, phase_3/, requirements.txt
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    volumes:
+      # Model artifacts mounted from host — update model without rebuilding image
+      # Host path → Container path (WORKDIR is /app inside the container)
+      - ./data/trained_models:/app/data/trained_models:ro
+      - ./data/feature_data:/app/data/feature_data:ro
+      # Championship state persists between restarts
+      - ./data/championship:/app/phase_3/data:rw
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Internal only — Caddy reaches this via the 'frontend' nginx proxy
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/docs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── React Frontend + Nginx ───────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend       # Contains: src/, public/, package.json, nginx.conf
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:80"    # Bind to localhost only — Caddy proxies externally
+    depends_on:
+      backend:
+        condition: service_healthy
+
+networks:
+  default:
+    driver: bridge

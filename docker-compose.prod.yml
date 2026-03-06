@@ -1,0 +1,35 @@
+# docker-compose.prod.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# Production overlay — adds Caddy as the TLS-terminating reverse proxy.
+# Caddy automatically provisions and renews Let's Encrypt certificates.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Required env var (in .env file):
+#   DOMAIN=f1strategy.yourdomain.com
+
+services:
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"       # HTTP → HTTPS redirect (handled by Caddy automatically)
+      - "443:443"     # HTTPS
+      - "443:443/udp" # HTTP/3 (QUIC)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data          # TLS certificates (persist across restarts)
+      - caddy_config:/config      # Caddy runtime config
+    depends_on:
+      - frontend
+    environment:
+      - DOMAIN=${DOMAIN}
+
+  frontend:
+    ports: []   # Remove direct port binding — Caddy handles all external traffic
+
+volumes:
+  caddy_data:
+  caddy_config:
