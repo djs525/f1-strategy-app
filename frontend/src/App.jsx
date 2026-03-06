@@ -720,7 +720,12 @@ function StrategySimulator() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "API error");
+      if (!res.ok) {
+        if (Array.isArray(data.detail)) {
+          throw new Error(data.detail.map(e => e.msg || JSON.stringify(e)).join(" · "));
+        }
+        throw new Error(data.detail || "API error");
+      }
       setResult(data);
     } catch (e) {
       setError(e.message);
@@ -1081,7 +1086,12 @@ function Predictor2026() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "API error");
+      if (!res.ok) {
+        if (Array.isArray(data.detail)) {
+          throw new Error(data.detail.map(e => e.msg || JSON.stringify(e)).join(" · "));
+        }
+        throw new Error(data.detail || "API error");
+      }
       setResult(data);
     } catch (e) {
       setError(e.message);
