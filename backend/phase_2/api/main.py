@@ -205,18 +205,6 @@ class StrategyInput(BaseModel):
         return pit_stops
 
     @validator("pit_stops")
-    def no_same_compound_back_to_back(cls, pit_stops, values):
-        starting = values.get("starting_compound", "")
-        sequence = [starting] + [p.compound for p in pit_stops]
-        for i in range(len(sequence) - 1):
-            if sequence[i] == sequence[i + 1]:
-                raise ValueError(
-                    f"Back-to-back same compound not allowed. "
-                    f"Stint {i+1} and {i+2} are both {sequence[i]}."
-                )
-        return pit_stops
-
-    @validator("pit_stops")
     def dry_race_must_use_two_compounds(cls, pit_stops, values):
         starting = values.get("starting_compound", "")
         all_compounds = {starting} | {p.compound for p in pit_stops}
